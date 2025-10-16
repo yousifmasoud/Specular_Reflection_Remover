@@ -275,8 +275,8 @@ def detect_highlights(image, skin_mask, eye_mask=None):
     highlight_mask = np.zeros_like(gray)
     
     # Threshold for brightness (adjust these values if needed)
-    brightness_threshold = 200  # V channel threshold
-    saturation_threshold = 100   # S channel threshold (low saturation)
+    brightness_threshold = 180  # V channel threshold
+    saturation_threshold = 200   # S channel threshold (low saturation)
     
     # Create highlight mask based on high brightness and low saturation
     highlight_mask = ((v > brightness_threshold) & (s < saturation_threshold)).astype(np.uint8) * 255
