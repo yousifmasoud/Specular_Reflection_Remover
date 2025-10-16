@@ -108,53 +108,203 @@ def detect_highlights(image, skin_mask):
 
 def inpaint_highlights(image, highlight_mask):
     """
-    Remove highlights using inpainting technique.
+    Remove highlights using enhanced inpainting technique.
     This blends the highlighted areas with surrounding skin tone.
     """
-    # Use OpenCV's inpainting algorithm
-    # INPAINT_TELEA works well for small regions
-    result = cv2.inpaint(image, highlight_mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+    # Use a two-stage inpainting approach
+    # First stage: Navier-Stokes based inpainting for structure
+    result = cv2.inpaint(image, highlight_mask, inpaintRadius=7, flags=cv2.INPAINT_NS)
+    
+    # Second stage: Apply local skin tone correction
+    result = blend_with_local_skin_tone(image, result, highlight_mask)
+    
+    return result
+
+
+def blend_with_local_skin_tone(original, inpainted, mask):
+    """
+    Enhanced blending that matches local skin tone characteristics.
+    """
+    result = inpainted.copy().astype(np.float32)
+    original_float = original.astype(np.float32)
+    
+    # Create a ring around each highlight to sample surrounding skin
+    kernel_inner = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    kernel_outer = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
+    
+    # Erode mask slightly to avoid highlight pixels
+    eroded_mask = cv2.erode(mask, kernel_inner, iterations=1)
+    
+    # Dilate to get surrounding region
+    dilated_mask = cv2.dilate(eroded_mask, kernel_outer, iterations=1)
+    
+    # Border region = surrounding skin
+    border_mask = cv2.subtract(dilated_mask, eroded_mask)
+    
+    # Get connected components of highlights to process each separately
+    num_labels, labels = cv2.connectedComponents(mask)
+    
+    for label in range(1, num_labels):
+        # Get current highlight region
+        current_highlight = (labels == label).astype(np.uint8) * 255
+        
+        # Get local border for this specific highlight
+        dilated_current = cv2.dilate(current_highlight, kernel_outer, iterations=1)
+        local_border = cv2.bitwise_and(border_mask, dilated_current)
+        
+        if np.sum(local_border) == 0:
+            continue
+        
+        # Sample surrounding skin colors
+        for c in range(3):
+            channel = result[:, :, c]
+            orig_channel = original_float[:, :, c]
+            
+            # Get surrounding skin pixels
+            border_pixels = orig_channel[local_border > 0]
+            
+            if len(border_pixels) > 10:
+                # Use percentile to avoid outliers
+                local_median = np.percentile(border_pixels, 50)
+                local_q25 = np.percentile(border_pixels, 25)
+                local_q75 = np.percentile(border_pixels, 75)
+                
+                # Get inpainted pixels in this region
+                highlight_pixels = channel[current_highlight > 0]
+                
+                # Calculate mean of inpainted region
+                inpainted_mean = np.mean(highlight_pixels)
+                
+                # Adjust to match local skin tone distribution
+                if inpainted_mean > local_median:
+                    # If too bright, darken towards median
+                    scale_factor = local_median / (inpainted_mean + 1e-6)
+                    channel[current_highlight > 0] = np.clip(
+                        highlight_pixels * scale_factor * 0.85 + local_median * 0.15,
+                        local_q25, local_q75
+                    )
+                else:
+                    # Already darker, minor adjustment
+                    channel[current_highlight > 0] = np.clip(
+                        highlight_pixels * 0.7 + local_median * 0.3,
+                        local_q25, local_q75
+                    )
+    
+    result = result.astype(np.uint8)
+    
+    # Apply edge-preserving smoothing only on corrected regions
+    mask_3d = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    smoothed = cv2.bilateralFilter(result, d=9, sigmaColor=50, sigmaSpace=50)
+    
+    # Blend smoothed version only in highlight regions
+    mask_float = mask_3d.astype(np.float32) / 255.0
+    result = (smoothed * mask_float + result * (1 - mask_float)).astype(np.uint8)
     
     return result
 
 
 def remove_reflections_advanced(image, highlight_mask):
     """
-    Advanced method to remove reflections by blending with local skin tone.
+    Advanced method to remove reflections by intelligent blending with local skin tone.
+    Uses texture synthesis and color matching for natural results.
     """
     result = image.copy().astype(np.float32)
+    original = image.astype(np.float32)
     
-    # Dilate the mask to get surrounding skin pixels
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    dilated_mask = cv2.dilate(highlight_mask, kernel, iterations=2)
+    # Create sampling rings around highlights
+    kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (30, 30))
     
-    # Get the border region (surrounding skin)
-    border_mask = cv2.subtract(dilated_mask, highlight_mask)
+    # Shrink mask slightly to ensure we're working with highlight core
+    core_mask = cv2.erode(highlight_mask, kernel_small, iterations=1)
     
-    # For each color channel
-    for c in range(3):
-        channel = result[:, :, c]
+    # Create rings for sampling at different distances
+    ring1 = cv2.dilate(core_mask, kernel_medium, iterations=1)
+    ring1 = cv2.subtract(ring1, core_mask)
+    
+    ring2 = cv2.dilate(core_mask, kernel_large, iterations=1)
+    ring2 = cv2.subtract(ring2, cv2.dilate(core_mask, kernel_medium, iterations=1))
+    
+    # Combine rings with weights (closer ring has more influence)
+    sampling_mask = cv2.addWeighted(ring1, 0.7, ring2, 0.3, 0)
+    
+    # Process each connected highlight region independently
+    num_labels, labels = cv2.connectedComponents(highlight_mask)
+    
+    for label in range(1, num_labels):
+        current_highlight = (labels == label).astype(np.uint8) * 255
         
-        # Calculate local mean of surrounding skin
-        border_pixels = channel[border_mask > 0]
-        if len(border_pixels) > 0:
-            local_mean = np.median(border_pixels)
+        # Get local sampling region for this highlight
+        dilated_current = cv2.dilate(current_highlight, kernel_large, iterations=1)
+        local_sampling = cv2.bitwise_and(sampling_mask, dilated_current)
+        
+        if np.sum(local_sampling) < 100:  # Not enough samples
+            continue
+        
+        # Extract color statistics from surrounding skin
+        b_samples = original[:, :, 0][local_sampling > 0]
+        g_samples = original[:, :, 1][local_sampling > 0]
+        r_samples = original[:, :, 2][local_sampling > 0]
+        
+        # Calculate robust statistics (avoid outliers)
+        b_target = np.percentile(b_samples, 50)
+        g_target = np.percentile(g_samples, 50)
+        r_target = np.percentile(r_samples, 50)
+        
+        b_std = np.std(b_samples)
+        g_std = np.std(g_samples)
+        r_std = np.std(r_samples)
+        
+        # Create distance transform for smooth blending from edges
+        dist_transform = cv2.distanceTransform(current_highlight, cv2.DIST_L2, 5)
+        dist_transform = cv2.normalize(dist_transform, None, 0, 1, cv2.NORM_MINMAX)
+        
+        # Apply Gaussian blur to distance for smoother transition
+        dist_transform = cv2.GaussianBlur(dist_transform, (11, 11), 0)
+        
+        # Get current highlight pixels
+        highlight_coords = current_highlight > 0
+        
+        # Blend towards target skin tone with distance-based weighting
+        for c, target, std_dev in [(0, b_target, b_std), (1, g_target, g_std), (2, r_target, r_std)]:
+            channel = result[:, :, c]
+            current_pixels = channel[highlight_coords]
+            dist_values = dist_transform[highlight_coords]
             
-            # Blend highlight regions towards local skin tone
-            highlight_region = highlight_mask > 0
-            channel[highlight_region] = local_mean * 0.7 + channel[highlight_region] * 0.3
+            # Stronger correction in center, gentler at edges
+            blend_strength = 0.6 + 0.3 * dist_values  # 0.6 to 0.9
+            
+            # Add some texture variation
+            noise = np.random.normal(0, std_dev * 0.1, size=current_pixels.shape)
+            
+            # Blend with target color
+            new_values = (current_pixels * (1 - blend_strength) + 
+                         target * blend_strength + noise)
+            
+            # Clamp to valid range and reasonable bounds
+            new_values = np.clip(new_values, 
+                               max(0, target - 2 * std_dev), 
+                               min(255, target + 2 * std_dev))
+            
+            channel[highlight_coords] = new_values
     
-    # Apply bilateral filter to smooth while preserving edges
     result = result.astype(np.uint8)
-    result = cv2.bilateralFilter(result, d=9, sigmaColor=75, sigmaSpace=75)
     
-    # Blend the result back using the highlight mask
+    # Multi-scale smoothing for natural texture
+    # Fine details
+    fine = cv2.bilateralFilter(result, d=5, sigmaColor=30, sigmaSpace=30)
+    # Medium details  
+    medium = cv2.bilateralFilter(result, d=9, sigmaColor=50, sigmaSpace=50)
+    
+    # Blend scales based on mask
     mask_3d = cv2.cvtColor(highlight_mask, cv2.COLOR_GRAY2BGR).astype(np.float32) / 255.0
+    mask_3d = cv2.GaussianBlur(mask_3d, (21, 21), 0)
     
-    # Smooth the mask edges for better blending
-    mask_3d = cv2.GaussianBlur(mask_3d, (15, 15), 0)
+    # Use fine smoothing in center, medium at edges
+    result = (fine * 0.4 + medium * 0.6).astype(np.uint8)
     
-    # Blend original and processed image
+    # Final blend with original using smooth mask
     final_result = (result * mask_3d + image * (1 - mask_3d)).astype(np.uint8)
     
     return final_result
@@ -222,9 +372,9 @@ if __name__ == "__main__":
     input_photo = "input_photo.jpeg"
     output_photo = "output_photo.jpeg"
     
-    # You can choose between 'inpaint' (faster, good for small highlights)
-    # or 'advanced' (better for larger reflections)
-    process_image(input_photo, output_photo, method='inpaint')
+    # You can choose between 'inpaint' (enhanced inpainting with skin tone matching)
+    # or 'advanced' (intelligent texture synthesis and color blending - RECOMMENDED)
+    process_image(input_photo, output_photo, method='advanced')
     
     print(f"\nOutput saved to: {output_photo}")
     print("Intermediate masks saved for inspection:")
