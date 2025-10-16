@@ -2,6 +2,24 @@
 
 This Python script automatically detects and removes white light reflections from human skin in photos while preserving the background.
 
+## Project Structure
+
+```
+Flash/
+├── src/                          # Source code
+│   └── remove_skin_reflections.py
+├── data/                         # Data directory
+│   ├── input/                    # Input images
+│   ├── output/                   # Processed output images
+│   └── masks/                    # Debug masks
+├── models/                       # Haar Cascade models
+│   ├── haarcascade_eye.xml
+│   └── haarcascade_frontalface_default.xml
+├── requirements.txt              # Python dependencies
+├── README.md                     # Documentation
+└── .gitignore                    # Git ignore rules
+```
+
 ## Features
 
 - **Eye Detection & Exclusion**: Automatically detects and excludes eye regions from processing to preserve natural eye highlights and reflections
@@ -16,21 +34,33 @@ This Python script automatically detects and removes white light reflections fro
 
 ## Installation
 
-1. Install the required dependencies:
+1. Clone the repository:
+```bash
+git clone https://github.com/yousifmasoud/Specular_Reflection_Remover
+.git
+cd Flash
+```
+
+2. Install the required dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Usage
 
-1. Place your input image as `input_photo.jpeg` in the same directory as the script
+### Quick Start
+
+1. Place your input image as `input_photo.jpeg` in the `data/input/` directory
 
 2. Run the script:
+
 ```bash
-python remove_skin_reflections.py
+python src/remove_skin_reflections.py
 ```
 
-3. The processed image will be saved as `output_photo.jpeg`
+3. Find your results:
+   - Processed image: `data/output/output_photo.jpeg`
+   - Debug masks: `data/masks/`
 
 ### Using Different Methods
 
@@ -46,12 +76,12 @@ process_image(input_photo, output_photo, method='advanced')
 
 ### Custom Input/Output Files
 
-You can modify the file paths in the script:
+You can modify the file paths in the script's `__main__` section:
 
 ```python
-input_photo = "your_input_image.jpg"
-output_photo = "your_output_image.jpg"
-process_image(input_photo, output_photo, method='inpaint')
+input_photo = os.path.join(input_dir, "your_input_image.jpg")
+output_photo = os.path.join(output_dir, "your_output_image.jpg")
+process_image(input_photo, output_photo, method='advanced')
 ```
 
 ## How It Works
@@ -69,10 +99,10 @@ process_image(input_photo, output_photo, method='inpaint')
 
 ## Output Files
 
-- `output_photo.jpeg`: Final processed image
-- `skin_mask.png`: Shows detected skin regions with eyes excluded (for debugging)
-- `highlight_mask.png`: Shows detected reflections with eyes excluded (for debugging)
-- `eye_mask.png`: Shows detected eye regions (for debugging, if eyes are found)
+- `data/output/output_photo.jpeg`: Final processed image
+- `data/masks/skin_mask.png`: Shows detected skin regions with eyes excluded (for debugging)
+- `data/masks/highlight_mask.png`: Shows detected reflections with eyes excluded (for debugging)
+- `data/masks/eye_mask.png`: Shows detected eye regions (for debugging, if eyes are found)
 
 ## Adjusting Sensitivity
 

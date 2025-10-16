@@ -117,10 +117,14 @@ def detect_eyes(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
     # Load Haar Cascade for eye detection
-    eye_cascade = cv2.CascadeClassifier('haarcascade_eye.xml')
+    import os
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    models_dir = os.path.join(os.path.dirname(script_dir), 'models')
+    
+    eye_cascade = cv2.CascadeClassifier(os.path.join(models_dir, 'haarcascade_eye.xml'))
     
     # Also try face detection to better locate eye regions
-    face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+    face_cascade = cv2.CascadeClassifier(os.path.join(models_dir, 'haarcascade_frontalface_default.xml'))
     
     # Create empty mask
     eye_mask = np.zeros(gray.shape, dtype=np.uint8)
@@ -567,28 +571,50 @@ def process_image(input_path, output_path, method='advanced'):
     cv2.imwrite(output_path, result)
     
     # Optionally save intermediate masks for debugging
-    cv2.imwrite('skin_mask.png', skin_mask)
-    cv2.imwrite('highlight_mask.png', highlight_mask)
+    import os
+    output_dir = os.path.dirname(output_path)
+    project_root = os.path.dirname(output_dir) if 'data' in output_dir else os.path.dirname(os.path.dirname(output_path))
+    masks_dir = os.path.join(project_root, 'data', 'masks') if 'data' in output_dir else '.'
+    
+    # Ensure masks directory exists
+    os.makedirs(masks_dir, exist_ok=True)
+    
+    skin_mask_path = os.path.join(masks_dir, 'skin_mask.png')
+    highlight_mask_path = os.path.join(masks_dir, 'highlight_mask.png')
+    eye_mask_path = os.path.join(masks_dir, 'eye_mask.png')
+    
+    cv2.imwrite(skin_mask_path, skin_mask)
+    cv2.imwrite(highlight_mask_path, highlight_mask)
     if np.sum(eye_mask) > 0:
-        cv2.imwrite('eye_mask.png', eye_mask)
-        print("Saved intermediate masks: skin_mask.png, highlight_mask.png, eye_mask.png")
+        cv2.imwrite(eye_mask_path, eye_mask)
+        print(f"Saved intermediate masks: {skin_mask_path}, {highlight_mask_path}, {eye_mask_path}")
     else:
-        print("Saved intermediate masks: skin_mask.png, highlight_mask.png")
+        print(f"Saved intermediate masks: {skin_mask_path}, {highlight_mask_path}")
     
     print("Done!")
 
 
 if __name__ == "__main__":
+    import os
+    
+    # Set up paths relative to project root
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    
+    input_dir = os.path.join(project_root, 'data', 'input')
+    output_dir = os.path.join(project_root, 'data', 'output')
+    masks_dir = os.path.join(project_root, 'data', 'masks')
+    
     # Process the input photo
-    input_photo = "input_photo.jpeg"
-    output_photo = "output_photo.jpeg"
+    input_photo = os.path.join(input_dir, "input_photo.jpeg")
+    output_photo = os.path.join(output_dir, "output_photo.jpeg")
     
     # You can choose between 'inpaint' (enhanced inpainting with skin tone matching)
     # or 'advanced' (intelligent texture synthesis and color blending - RECOMMENDED)
     process_image(input_photo, output_photo, method='advanced')
     
     print(f"\nOutput saved to: {output_photo}")
-    print("Intermediate masks saved for inspection:")
+    print(f"Intermediate masks saved to: {masks_dir}")
     print("  - skin_mask.png: Shows detected skin regions (eyes excluded)")
     print("  - highlight_mask.png: Shows detected reflections (eyes excluded)")
     print("  - eye_mask.png: Shows detected eye regions (if any eyes found)")
