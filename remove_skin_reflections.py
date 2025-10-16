@@ -2,6 +2,82 @@ import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
+def detect_eyes(image):
+    """
+    Detect eyes in the image and return a mask to exclude them.
+    Returns a binary mask where eye regions are white (255).
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Load Haar Cascade for eye detection
+    eye_cascade = cv2.CascadeClassifier('haarcascade_eye.xml')
+    
+    # Also try face detection to better locate eye regions
+    face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+    
+    # Create empty mask
+    eye_mask = np.zeros(gray.shape, dtype=np.uint8)
+    
+    # Detect faces first to narrow down search area
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    
+    if len(faces) > 0:
+        # Search for eyes within face regions
+        for (x, y, w, h) in faces:
+            # Define eye region (upper half of face)
+            roi_gray = gray[y:y+int(h*0.6), x:x+w]
+            roi_x, roi_y = x, y
+            
+            # Detect eyes in this region
+            eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
+            
+            for (ex, ey, ew, eh) in eyes:
+                # Add minimal padding around detected eyes
+                padding = int(max(ew, eh) * 0.1)
+                
+                # Calculate absolute coordinates
+                abs_x = roi_x + ex - padding
+                abs_y = roi_y + ey - padding
+                abs_w = ew + 2 * padding
+                abs_h = eh + 2 * padding
+                
+                # Ensure within image bounds
+                abs_x = max(0, abs_x)
+                abs_y = max(0, abs_y)
+                abs_w = min(image.shape[1] - abs_x, abs_w)
+                abs_h = min(image.shape[0] - abs_y, abs_h)
+                
+                # Draw ellipse for more natural eye shape exclusion
+                center = (abs_x + abs_w // 2, abs_y + abs_h // 2)
+                axes = (abs_w // 2, abs_h // 2)
+                cv2.ellipse(eye_mask, center, axes, 0, 0, 360, 255, -1)
+    else:
+        # No face detected, try to detect eyes directly in whole image
+        eyes = eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
+        
+        for (ex, ey, ew, eh) in eyes:
+            # Add minimal padding around detected eyes
+            padding = int(max(ew, eh) * 0.1)
+            
+            ex = max(0, ex - padding)
+            ey = max(0, ey - padding)
+            ew = min(image.shape[1] - ex, ew + 2 * padding)
+            eh = min(image.shape[0] - ey, eh + 2 * padding)
+            
+            # Draw ellipse for more natural eye shape exclusion
+            center = (ex + ew // 2, ey + eh // 2)
+            axes = (ew // 2, eh // 2)
+            cv2.ellipse(eye_mask, center, axes, 0, 0, 360, 255, -1)
+    
+    # Apply minimal morphological operations to smooth eye mask
+    if np.sum(eye_mask) > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        eye_mask = cv2.dilate(eye_mask, kernel, iterations=1)
+        eye_mask = cv2.GaussianBlur(eye_mask, (7, 7), 0)
+    
+    return eye_mask
+
+
 def detect_skin(image):
     """
     Detect skin regions in the image using multiple color spaces with refined masking.
@@ -72,7 +148,7 @@ def detect_skin(image):
     return refined_mask
 
 
-def detect_highlights(image, skin_mask):
+def detect_highlights(image, skin_mask, eye_mask=None):
     """
     Detect bright highlights/reflections on skin areas.
     Returns a mask of the highlight regions.
@@ -97,6 +173,13 @@ def detect_highlights(image, skin_mask):
     
     # Only keep highlights that are on skin
     highlight_mask = cv2.bitwise_and(highlight_mask, skin_mask)
+    
+    # Exclude eye regions from highlight mask
+    if eye_mask is not None and np.sum(eye_mask) > 0:
+        # Create inverse eye mask (everything except eyes)
+        eye_mask_binary = (eye_mask > 127).astype(np.uint8) * 255
+        inverse_eye_mask = cv2.bitwise_not(eye_mask_binary)
+        highlight_mask = cv2.bitwise_and(highlight_mask, inverse_eye_mask)
     
     # Morphological operations to refine the highlight mask
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -329,13 +412,27 @@ def process_image(input_path, output_path, method='advanced'):
     
     print(f"Image shape: {image.shape}")
     
-    # Step 1: Detect skin regions
+    # Step 1: Detect and exclude eyes
+    print("Detecting eyes to exclude from processing...")
+    eye_mask = detect_eyes(image)
+    if np.sum(eye_mask) > 0:
+        print(f"Detected and will exclude {np.sum(eye_mask > 0)} eye region pixels")
+    else:
+        print("No eyes detected, processing entire face")
+    
+    # Step 2: Detect skin regions
     print("Detecting skin regions...")
     skin_mask = detect_skin(image)
     
-    # Step 2: Detect highlights on skin
+    # Exclude eyes from skin mask
+    if np.sum(eye_mask) > 0:
+        eye_mask_binary = (eye_mask > 127).astype(np.uint8) * 255
+        inverse_eye_mask = cv2.bitwise_not(eye_mask_binary)
+        skin_mask = cv2.bitwise_and(skin_mask, inverse_eye_mask)
+    
+    # Step 3: Detect highlights on skin (excluding eyes)
     print("Detecting highlights/reflections...")
-    highlight_mask = detect_highlights(image, skin_mask)
+    highlight_mask = detect_highlights(image, skin_mask, eye_mask)
     
     # Check if any highlights were detected
     if np.sum(highlight_mask) == 0:
@@ -362,7 +459,11 @@ def process_image(input_path, output_path, method='advanced'):
     # Optionally save intermediate masks for debugging
     cv2.imwrite('skin_mask.png', skin_mask)
     cv2.imwrite('highlight_mask.png', highlight_mask)
-    print("Saved intermediate masks: skin_mask.png, highlight_mask.png")
+    if np.sum(eye_mask) > 0:
+        cv2.imwrite('eye_mask.png', eye_mask)
+        print("Saved intermediate masks: skin_mask.png, highlight_mask.png, eye_mask.png")
+    else:
+        print("Saved intermediate masks: skin_mask.png, highlight_mask.png")
     
     print("Done!")
 
@@ -378,5 +479,6 @@ if __name__ == "__main__":
     
     print(f"\nOutput saved to: {output_photo}")
     print("Intermediate masks saved for inspection:")
-    print("  - skin_mask.png: Shows detected skin regions")
-    print("  - highlight_mask.png: Shows detected reflections")
+    print("  - skin_mask.png: Shows detected skin regions (eyes excluded)")
+    print("  - highlight_mask.png: Shows detected reflections (eyes excluded)")
+    print("  - eye_mask.png: Shows detected eye regions (if any eyes found)")
