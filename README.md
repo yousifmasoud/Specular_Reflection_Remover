@@ -4,13 +4,15 @@ This Python script automatically detects and removes white light reflections fro
 
 ## Features
 
-- **Skin Detection**: Uses HSV and YCrCb color spaces to accurately detect skin regions
-- **Highlight Detection**: Identifies bright reflections based on brightness and saturation
+- **Eye Detection & Exclusion**: Automatically detects and excludes eye regions from processing to preserve natural eye highlights and reflections
+- **Refined Skin Detection**: Uses HSV, YCrCb, and RGB color spaces with advanced morphological operations for accurate skin region detection
+- **Highlight Detection**: Identifies bright reflections based on brightness and saturation, excluding eyes
 - **Smart Removal**: Two methods available:
-  - `inpaint`: Fast OpenCV inpainting (good for small reflections)
-  - `advanced`: Custom blending with local skin tones (better for larger areas)
-- **Background Preservation**: Only processes skin areas, leaving background untouched
-- **Debug Output**: Saves intermediate masks for inspection
+  - `inpaint`: Enhanced inpainting with local skin tone matching
+  - `advanced`: Intelligent texture synthesis and color blending (RECOMMENDED)
+- **Background Preservation**: Only processes skin areas, leaving background completely untouched
+- **Natural Blending**: Multi-scale smoothing and distance-based blending for seamless results
+- **Debug Output**: Saves intermediate masks for inspection (skin, highlights, and eyes)
 
 ## Installation
 
@@ -54,18 +56,23 @@ process_image(input_photo, output_photo, method='inpaint')
 
 ## How It Works
 
-1. **Skin Detection**: The algorithm identifies skin regions using color thresholds in HSV and YCrCb color spaces
-2. **Highlight Detection**: Finds bright, desaturated areas within skin regions (typical of light reflections)
-3. **Inpainting/Blending**: Removes highlights using either:
-   - OpenCV's Telea inpainting algorithm
-   - Custom local tone blending with bilateral filtering
-4. **Background Preservation**: Only skin regions are processed; everything else remains unchanged
+1. **Eye Detection**: Uses Haar Cascade classifiers to detect and exclude eye regions from processing
+2. **Refined Skin Detection**: Identifies skin regions using multi-color space analysis (HSV, YCrCb, RGB) with:
+   - Connected components analysis to remove false positives
+   - Advanced morphological operations for refinement
+   - Automatic eye region exclusion
+3. **Highlight Detection**: Finds bright, desaturated areas within skin regions (excluding eyes)
+4. **Intelligent Blending**: Removes highlights using:
+   - **Inpaint method**: Enhanced Navier-Stokes inpainting with local skin tone matching
+   - **Advanced method**: Texture synthesis with per-highlight color adaptation, distance-based blending, and multi-scale smoothing
+5. **Background Preservation**: Only skin regions (excluding eyes) are processed; everything else remains unchanged
 
 ## Output Files
 
 - `output_photo.jpeg`: Final processed image
-- `skin_mask.png`: Shows detected skin regions (for debugging)
-- `highlight_mask.png`: Shows detected reflections (for debugging)
+- `skin_mask.png`: Shows detected skin regions with eyes excluded (for debugging)
+- `highlight_mask.png`: Shows detected reflections with eyes excluded (for debugging)
+- `eye_mask.png`: Shows detected eye regions (for debugging, if eyes are found)
 
 ## Adjusting Sensitivity
 
