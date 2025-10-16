@@ -2,9 +2,116 @@ import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
+def detect_eye_region_precise(image, eye_x, eye_y, eye_w, eye_h):
+    """
+    Precisely detect the actual eye area (iris, pupil, sclera) within a detected eye bounding box.
+    Returns a refined mask for just the eye structure.
+    """
+    # Extract the eye region
+    eye_roi = image[eye_y:eye_y+eye_h, eye_x:eye_x+eye_w]
+    
+    if eye_roi.size == 0:
+        return np.zeros((eye_h, eye_w), dtype=np.uint8)
+    
+    # Convert to grayscale and HSV for analysis
+    eye_gray = cv2.cvtColor(eye_roi, cv2.COLOR_BGR2GRAY)
+    eye_hsv = cv2.cvtColor(eye_roi, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(eye_hsv)
+    
+    # Create refined mask
+    refined_mask = np.zeros((eye_h, eye_w), dtype=np.uint8)
+    
+    # Method 1: Detect dark regions (pupil and iris)
+    # Pupil and iris are typically darker than surrounding skin
+    _, dark_mask = cv2.threshold(eye_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Method 2: Detect eye whites (sclera) - low saturation, medium-high brightness
+    sclera_mask = ((s < 40) & (v > 100) & (v < 240)).astype(np.uint8) * 255
+    
+    # Method 3: Detect iris region - has some color saturation
+    iris_mask = ((s > 15) & (v > 30) & (v < 200)).astype(np.uint8) * 255
+    
+    # Combine masks: we want dark areas (pupil/iris) OR white areas (sclera)
+    eye_structure = cv2.bitwise_or(dark_mask, sclera_mask)
+    eye_structure = cv2.bitwise_or(eye_structure, iris_mask)
+    
+    # Clean up the mask - remove small noise
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    eye_structure = cv2.morphologyEx(eye_structure, cv2.MORPH_CLOSE, kernel, iterations=2)
+    eye_structure = cv2.morphologyEx(eye_structure, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    # Find the largest connected component (the actual eye)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(eye_structure, connectivity=8)
+    
+    if num_labels > 1:
+        # Get the largest component (excluding background)
+        largest_component = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+        refined_mask = (labels == largest_component).astype(np.uint8) * 255
+    else:
+        refined_mask = eye_structure
+    
+    # Apply edge detection to find eye boundaries
+    edges = cv2.Canny(eye_gray, 30, 100)
+    
+    # Dilate edges slightly to create boundary
+    edges = cv2.dilate(edges, kernel, iterations=1)
+    
+    # Fill the region inside the edges
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        # Find contour that's most likely the eye (centered, reasonable size)
+        eye_center_x, eye_center_y = eye_w // 2, eye_h // 2
+        
+        best_contour = None
+        best_score = float('inf')
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            # Eye should be a reasonable portion of the detection box
+            if area < (eye_w * eye_h * 0.1) or area > (eye_w * eye_h * 0.8):
+                continue
+            
+            # Calculate how centered the contour is
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                dist = np.sqrt((cx - eye_center_x)**2 + (cy - eye_center_y)**2)
+                
+                if dist < best_score:
+                    best_score = dist
+                    best_contour = contour
+        
+        if best_contour is not None:
+            # Create mask from best contour
+            contour_mask = np.zeros((eye_h, eye_w), dtype=np.uint8)
+            cv2.drawContours(contour_mask, [best_contour], -1, 255, -1)
+            
+            # Combine with color-based detection
+            refined_mask = cv2.bitwise_or(refined_mask, contour_mask)
+    
+    # Create an almond/eye shape mask as a constraint
+    # Eyes are typically almond-shaped, not circular
+    almond_mask = np.zeros((eye_h, eye_w), dtype=np.uint8)
+    center = (eye_w // 2, eye_h // 2)
+    
+    # Create almond shape (ellipse with narrower width at top and bottom)
+    axes = (int(eye_w * 0.45), int(eye_h * 0.35))
+    cv2.ellipse(almond_mask, center, axes, 0, 0, 360, 255, -1)
+    
+    # Intersect with almond shape to ensure natural eye shape
+    refined_mask = cv2.bitwise_and(refined_mask, almond_mask)
+    
+    # Final smoothing
+    refined_mask = cv2.GaussianBlur(refined_mask, (5, 5), 0)
+    
+    return refined_mask
+
+
 def detect_eyes(image):
     """
-    Detect eyes in the image and return a mask to exclude them.
+    Detect eyes in the image and return a precise mask of actual eye areas.
     Returns a binary mask where eye regions are white (255).
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -32,14 +139,11 @@ def detect_eyes(image):
             eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
             
             for (ex, ey, ew, eh) in eyes:
-                # Add minimal padding around detected eyes
-                padding = int(max(ew, eh) * 0.1)
-                
                 # Calculate absolute coordinates
-                abs_x = roi_x + ex - padding
-                abs_y = roi_y + ey - padding
-                abs_w = ew + 2 * padding
-                abs_h = eh + 2 * padding
+                abs_x = roi_x + ex
+                abs_y = roi_y + ey
+                abs_w = ew
+                abs_h = eh
                 
                 # Ensure within image bounds
                 abs_x = max(0, abs_x)
@@ -47,33 +151,39 @@ def detect_eyes(image):
                 abs_w = min(image.shape[1] - abs_x, abs_w)
                 abs_h = min(image.shape[0] - abs_y, abs_h)
                 
-                # Draw ellipse for more natural eye shape exclusion
-                center = (abs_x + abs_w // 2, abs_y + abs_h // 2)
-                axes = (abs_w // 2, abs_h // 2)
-                cv2.ellipse(eye_mask, center, axes, 0, 0, 360, 255, -1)
+                # Get precise eye mask for this region
+                precise_mask = detect_eye_region_precise(image, abs_x, abs_y, abs_w, abs_h)
+                
+                # Place the precise mask in the full image mask
+                eye_mask[abs_y:abs_y+abs_h, abs_x:abs_x+abs_w] = cv2.bitwise_or(
+                    eye_mask[abs_y:abs_y+abs_h, abs_x:abs_x+abs_w],
+                    precise_mask
+                )
     else:
         # No face detected, try to detect eyes directly in whole image
         eyes = eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
         
         for (ex, ey, ew, eh) in eyes:
-            # Add minimal padding around detected eyes
-            padding = int(max(ew, eh) * 0.1)
+            # Ensure within bounds
+            ex = max(0, ex)
+            ey = max(0, ey)
+            ew = min(image.shape[1] - ex, ew)
+            eh = min(image.shape[0] - ey, eh)
             
-            ex = max(0, ex - padding)
-            ey = max(0, ey - padding)
-            ew = min(image.shape[1] - ex, ew + 2 * padding)
-            eh = min(image.shape[0] - ey, eh + 2 * padding)
+            # Get precise eye mask for this region
+            precise_mask = detect_eye_region_precise(image, ex, ey, ew, eh)
             
-            # Draw ellipse for more natural eye shape exclusion
-            center = (ex + ew // 2, ey + eh // 2)
-            axes = (ew // 2, eh // 2)
-            cv2.ellipse(eye_mask, center, axes, 0, 0, 360, 255, -1)
+            # Place the precise mask in the full image mask
+            eye_mask[ey:ey+eh, ex:ex+ew] = cv2.bitwise_or(
+                eye_mask[ey:ey+eh, ex:ex+ew],
+                precise_mask
+            )
     
-    # Apply minimal morphological operations to smooth eye mask
+    # Apply minimal smoothing to final mask
     if np.sum(eye_mask) > 0:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        eye_mask = cv2.dilate(eye_mask, kernel, iterations=1)
-        eye_mask = cv2.GaussianBlur(eye_mask, (7, 7), 0)
+        eye_mask = cv2.morphologyEx(eye_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        eye_mask = cv2.GaussianBlur(eye_mask, (5, 5), 0)
     
     return eye_mask
 
