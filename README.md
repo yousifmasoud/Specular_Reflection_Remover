@@ -48,23 +48,44 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Quick Start
+### Quick Start (Batch Processing)
 
-1. Place your input image as `input_photo.jpeg` in the `data/input/` directory
+The script automatically processes **all images** in the input folder:
+
+1. Place your images in the `data/input/` directory
+   - Supports: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.tiff`, `.tif`
 
 2. Run the script:
-
 ```bash
 python src/remove_skin_reflections.py
 ```
 
 3. Find your results:
-   - Processed image: `data/output/output_photo.jpeg`
-   - Debug masks: `data/masks/`
+   - Processed images: `data/output/{filename}_out.{ext}`
+   - Debug masks: `data/masks/{filename}_skin_mask.png`, etc.
+
+**Example:**
+- Input: `data/input/photo.jpg`
+- Output: `data/output/photo_out.jpg`
+- Masks: `data/masks/photo_skin_mask.png`, `photo_highlight_mask.png`, `photo_eye_mask.png`
+
+### Single Image Processing
+
+To process a single image programmatically:
+
+```python
+from remove_skin_reflections import process_image
+
+input_path = "data/input/my_photo.jpg"
+output_path = "data/output/my_photo_out.jpg"
+masks_dir = "data/masks"
+
+process_image(input_path, output_path, masks_dir, method='advanced')
+```
 
 ### Using Different Methods
 
-Edit the script to choose between methods:
+Edit the script's main section to choose between methods:
 
 ```python
 # Fast inpainting method (default)

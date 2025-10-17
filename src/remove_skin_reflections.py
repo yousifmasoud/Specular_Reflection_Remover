@@ -1,5 +1,7 @@
 import cv2
 import numpy as np
+import os
+import glob
 from scipy.ndimage import gaussian_filter
 
 def detect_eye_region_precise(image, eye_x, eye_y, eye_w, eye_h):
@@ -108,7 +110,6 @@ def detect_eye_region_precise(image, eye_x, eye_y, eye_w, eye_h):
     
     return refined_mask
 
-
 def detect_eyes(image):
     """
     Detect eyes in the image and return a precise mask of actual eye areas.
@@ -116,15 +117,14 @@ def detect_eyes(image):
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Load Haar Cascade for eye detection
-    import os
+    # Get the path to the models directory relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    models_dir = os.path.join(os.path.dirname(script_dir), 'models')
+    project_dir = os.path.dirname(script_dir)
     
-    eye_cascade = cv2.CascadeClassifier(os.path.join(models_dir, 'haarcascade_eye.xml'))
+    eye_cascade = cv2.CascadeClassifier(os.path.join(project_dir, 'models', 'haarcascade_eye.xml'))
     
     # Also try face detection to better locate eye regions
-    face_cascade = cv2.CascadeClassifier(os.path.join(models_dir, 'haarcascade_frontalface_default.xml'))
+    face_cascade = cv2.CascadeClassifier(os.path.join(project_dir, 'models', 'haarcascade_frontalface_default.xml'))
     
     # Create empty mask
     eye_mask = np.zeros(gray.shape, dtype=np.uint8)
@@ -260,7 +260,6 @@ def detect_skin(image):
     refined_mask = cv2.subtract(refined_mask, gradient // 2)
     
     return refined_mask
-
 
 def detect_highlights(image, skin_mask, eye_mask=None):
     """
@@ -400,13 +399,91 @@ def blend_with_local_skin_tone(original, inpainted, mask):
     return result
 
 
-def remove_reflections_advanced(image, highlight_mask):
+def get_dominant_skin_color(image, skin_mask, highlight_mask=None):
+    """
+    Extract the dominant non-white skin color from the image.
+    Returns the dominant color as (B, G, R) tuple.
+    Prioritizes mid-tone skin colors, avoiding shadows and highlights.
+    """
+    # Create a mask for valid skin pixels (not pure white or too bright/dark)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    
+    # Start with skin mask and remove highlight areas
+    valid_skin_mask = skin_mask.copy()
+    
+    if highlight_mask is not None:
+        # Remove highlight areas from sampling
+        inverse_highlight = cv2.bitwise_not(highlight_mask)
+        valid_skin_mask = cv2.bitwise_and(valid_skin_mask, inverse_highlight)
+    
+    # Filter for good skin pixels: 
+    # - Not too dark (V > 90) and not too bright (V < 200)
+    # - Has some color saturation (S > 20) to avoid white/gray
+    # - Skin hue range (H between 0-25 for orange/red tones)
+    good_skin_mask = ((v > 90) & (v < 200) & (s > 20) & (h <= 25)).astype(np.uint8) * 255
+    
+    # Combine masks
+    valid_skin_mask = cv2.bitwise_and(valid_skin_mask, good_skin_mask)
+    
+    if np.sum(valid_skin_mask) < 200:  # Not enough valid pixels
+        # Fallback: use broader range (less strict)
+        fallback_mask = ((v > 80) & (v < 210) & (s > 15)).astype(np.uint8) * 255
+        valid_skin_mask = cv2.bitwise_and(skin_mask, fallback_mask)
+        if highlight_mask is not None:
+            valid_skin_mask = cv2.bitwise_and(valid_skin_mask, inverse_highlight)
+        
+    if np.sum(valid_skin_mask) < 100:  # Still not enough
+        # Use all skin pixels except highlights
+        valid_skin_mask = skin_mask
+        if highlight_mask is not None:
+            valid_skin_mask = cv2.bitwise_and(valid_skin_mask, inverse_highlight)
+    
+    # Extract skin pixels
+    skin_pixels = image[valid_skin_mask > 0]
+    
+    if len(skin_pixels) < 50:
+        # Fallback to a generic medium-light skin tone
+        return (160, 175, 195)  # BGR format - lighter and more neutral
+    
+    # Use percentile-based approach (more robust than clustering for this)
+    # Get the median color, which represents the typical skin tone
+    b_values = skin_pixels[:, 0]
+    g_values = skin_pixels[:, 1]
+    r_values = skin_pixels[:, 2]
+    
+    # Use 60th percentile to slightly favor lighter tones (people often look better slightly lighter)
+    b_dominant = int(np.percentile(b_values, 60))
+    g_dominant = int(np.percentile(g_values, 60))
+    r_dominant = int(np.percentile(r_values, 60))
+    
+    # Slightly lighten the result to avoid making faces too dark
+    # Add 10-15 points to each channel
+    b_dominant = min(255, b_dominant + 12)
+    g_dominant = min(255, g_dominant + 12)
+    r_dominant = min(255, r_dominant + 12)
+    
+    return (b_dominant, g_dominant, r_dominant)
+
+
+def remove_reflections_advanced(image, highlight_mask, skin_mask=None):
     """
     Advanced method to remove reflections by intelligent blending with local skin tone.
     Uses texture synthesis and color matching for natural results.
+    Now with dominant skin color detection for better fill.
     """
     result = image.copy().astype(np.float32)
     original = image.astype(np.float32)
+    
+    # Get dominant skin color if skin_mask provided
+    dominant_skin_color = None
+    if skin_mask is not None:
+        try:
+            dominant_skin_color = get_dominant_skin_color(image, skin_mask, highlight_mask)
+            print(f"  Dominant skin color (BGR): {dominant_skin_color}")
+        except Exception as e:
+            print(f"  Could not determine dominant skin color: {e}")
+            dominant_skin_color = None
     
     # Create sampling rings around highlights
     kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -436,22 +513,38 @@ def remove_reflections_advanced(image, highlight_mask):
         dilated_current = cv2.dilate(current_highlight, kernel_large, iterations=1)
         local_sampling = cv2.bitwise_and(sampling_mask, dilated_current)
         
-        if np.sum(local_sampling) < 100:  # Not enough samples
-            continue
-        
-        # Extract color statistics from surrounding skin
-        b_samples = original[:, :, 0][local_sampling > 0]
-        g_samples = original[:, :, 1][local_sampling > 0]
-        r_samples = original[:, :, 2][local_sampling > 0]
-        
-        # Calculate robust statistics (avoid outliers)
-        b_target = np.percentile(b_samples, 50)
-        g_target = np.percentile(g_samples, 50)
-        r_target = np.percentile(r_samples, 50)
-        
-        b_std = np.std(b_samples)
-        g_std = np.std(g_samples)
-        r_std = np.std(r_samples)
+        # Use local samples if available, otherwise use dominant skin color
+        if np.sum(local_sampling) < 100:  # Not enough local samples
+            if dominant_skin_color is not None:
+                # Use dominant skin color as fallback
+                b_target, g_target, r_target = dominant_skin_color
+                b_std = g_std = r_std = 20.0  # Moderate variance
+            else:
+                continue  # Skip if no fallback available
+        else:
+            # Extract color statistics from surrounding skin
+            b_samples = original[:, :, 0][local_sampling > 0]
+            g_samples = original[:, :, 1][local_sampling > 0]
+            r_samples = original[:, :, 2][local_sampling > 0]
+            
+            # Calculate robust statistics (avoid outliers)
+            b_target = np.percentile(b_samples, 50)
+            g_target = np.percentile(g_samples, 50)
+            r_target = np.percentile(r_samples, 50)
+            
+            b_std = np.std(b_samples)
+            g_std = np.std(g_samples)
+            r_std = np.std(r_samples)
+            
+            # If local samples are too bright (washed out), blend with dominant color
+            if dominant_skin_color is not None:
+                avg_brightness = (b_target + g_target + r_target) / 3
+                if avg_brightness > 190:  # Local area is too bright/washed out
+                    # Blend local sampling with dominant color (favor dominant but gently)
+                    b_dom, g_dom, r_dom = dominant_skin_color
+                    b_target = b_target * 0.4 + b_dom * 0.6
+                    g_target = g_target * 0.4 + g_dom * 0.6
+                    r_target = r_target * 0.4 + r_dom * 0.6
         
         # Create distance transform for smooth blending from edges
         dist_transform = cv2.distanceTransform(current_highlight, cv2.DIST_L2, 5)
@@ -463,26 +556,36 @@ def remove_reflections_advanced(image, highlight_mask):
         # Get current highlight pixels
         highlight_coords = current_highlight > 0
         
-        # Blend towards target skin tone with distance-based weighting
+        # Process each color channel with intelligent blending
         for c, target, std_dev in [(0, b_target, b_std), (1, g_target, g_std), (2, r_target, r_std)]:
             channel = result[:, :, c]
-            current_pixels = channel[highlight_coords]
+            orig_channel = original[:, :, c]
             dist_values = dist_transform[highlight_coords]
             
-            # Stronger correction in center, gentler at edges
-            blend_strength = 0.6 + 0.3 * dist_values  # 0.6 to 0.9
+            # Get original pixel values (the bright/washed out pixels)
+            original_pixels = orig_channel[highlight_coords]
             
-            # Add some texture variation
-            noise = np.random.normal(0, std_dev * 0.1, size=current_pixels.shape)
+            # Use distance transform to determine blend strength
+            # At edges (dist=0): preserve more original texture
+            # At center (dist=1): use more target color (but keep it gentle)
+            blend_to_target = 0.35 + 0.25 * dist_values  # 0.35 to 0.6 (gentler blend)
             
-            # Blend with target color
-            new_values = (current_pixels * (1 - blend_strength) + 
-                         target * blend_strength + noise)
+            # Add subtle texture variation to avoid flat appearance
+            noise = np.random.normal(0, std_dev * 0.1, size=original_pixels.shape)
             
-            # Clamp to valid range and reasonable bounds
+            # Intelligent blending:
+            # - Start with original pixels (which are bright/washed)
+            # - Pull them gently toward target color
+            # - Keep significant original variation for texture
+            new_values = (original_pixels * (1 - blend_to_target) + 
+                         target * blend_to_target + 
+                         noise)
+            
+            # Clamp to reasonable bounds (wider range for more natural variation)
+            # Allow the result to stay brighter if needed
             new_values = np.clip(new_values, 
-                               max(0, target - 2 * std_dev), 
-                               min(255, target + 2 * std_dev))
+                               max(0, target - 3.5 * std_dev), 
+                               min(255, target + 3 * std_dev))
             
             channel[highlight_coords] = new_values
     
@@ -507,22 +610,26 @@ def remove_reflections_advanced(image, highlight_mask):
     return final_result
 
 
-def process_image(input_path, output_path, method='advanced'):
+def process_image(input_path, output_path, masks_dir=None, method='advanced'):
     """
-    Main function to process the image and remove skin reflections.
+    Process a single image to remove skin reflections.
     
     Parameters:
     - input_path: path to input image
     - output_path: path to save output image
-    - method: 'inpaint' or 'advanced' (default: 'inpaint')
+    - masks_dir: optional directory to save debug masks
+    - method: 'inpaint' or 'advanced' (default: 'advanced')
     """
-    # Read the input image
+    print(f"\n{'='*60}")
+    print(f"Processing: {os.path.basename(input_path)}")
+    print(f"{'='*60}")
+    
     print("Reading input image...")
     image = cv2.imread(input_path)
     
     if image is None:
         print(f"Error: Could not read image from {input_path}")
-        return
+        return False
     
     print(f"Image shape: {image.shape}")
     
@@ -552,16 +659,16 @@ def process_image(input_path, output_path, method='advanced'):
     if np.sum(highlight_mask) == 0:
         print("No significant highlights detected. Saving original image.")
         cv2.imwrite(output_path, image)
-        return
+        return True
     
     print(f"Detected {np.sum(highlight_mask > 0)} highlight pixels")
     
-    # Step 3: Remove highlights
+    # Step 4: Remove highlights
     print(f"Removing reflections using {method} method...")
     if method == 'inpaint':
         result = inpaint_highlights(image, highlight_mask)
     elif method == 'advanced':
-        result = remove_reflections_advanced(image, highlight_mask)
+        result = remove_reflections_advanced(image, highlight_mask, skin_mask)
     else:
         print(f"Unknown method: {method}. Using inpaint.")
         result = inpaint_highlights(image, highlight_mask)
@@ -570,51 +677,96 @@ def process_image(input_path, output_path, method='advanced'):
     print(f"Saving result to {output_path}...")
     cv2.imwrite(output_path, result)
     
-    # Optionally save intermediate masks for debugging
-    import os
-    output_dir = os.path.dirname(output_path)
-    project_root = os.path.dirname(output_dir) if 'data' in output_dir else os.path.dirname(os.path.dirname(output_path))
-    masks_dir = os.path.join(project_root, 'data', 'masks') if 'data' in output_dir else '.'
-    
-    # Ensure masks directory exists
-    os.makedirs(masks_dir, exist_ok=True)
-    
-    skin_mask_path = os.path.join(masks_dir, 'skin_mask.png')
-    highlight_mask_path = os.path.join(masks_dir, 'highlight_mask.png')
-    eye_mask_path = os.path.join(masks_dir, 'eye_mask.png')
-    
-    cv2.imwrite(skin_mask_path, skin_mask)
-    cv2.imwrite(highlight_mask_path, highlight_mask)
-    if np.sum(eye_mask) > 0:
-        cv2.imwrite(eye_mask_path, eye_mask)
-        print(f"Saved intermediate masks: {skin_mask_path}, {highlight_mask_path}, {eye_mask_path}")
-    else:
-        print(f"Saved intermediate masks: {skin_mask_path}, {highlight_mask_path}")
+    # Save masks if directory provided
+    if masks_dir:
+        os.makedirs(masks_dir, exist_ok=True)
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        
+        skin_mask_path = os.path.join(masks_dir, f"{base_name}_skin_mask.png")
+        highlight_mask_path = os.path.join(masks_dir, f"{base_name}_highlight_mask.png")
+        
+        cv2.imwrite(skin_mask_path, skin_mask)
+        cv2.imwrite(highlight_mask_path, highlight_mask)
+        
+        if np.sum(eye_mask) > 0:
+            eye_mask_path = os.path.join(masks_dir, f"{base_name}_eye_mask.png")
+            cv2.imwrite(eye_mask_path, eye_mask)
+            print(f"Saved masks: skin, highlight, and eye masks")
+        else:
+            print(f"Saved masks: skin and highlight masks")
     
     print("Done!")
+    return True
 
 
 if __name__ == "__main__":
-    import os
-    
     # Set up paths relative to project root
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     
-    input_dir = os.path.join(project_root, 'data', 'input')
-    output_dir = os.path.join(project_root, 'data', 'output')
-    masks_dir = os.path.join(project_root, 'data', 'masks')
+    # Define data directories
+    data_dir = os.path.join(project_root, 'data')
+    input_dir = os.path.join(data_dir, 'input')
+    output_dir = os.path.join(data_dir, 'output')
+    masks_dir = os.path.join(data_dir, 'masks')
     
-    # Process the input photo
-    input_photo = os.path.join(input_dir, "input_photo.jpeg")
-    output_photo = os.path.join(output_dir, "output_photo.jpeg")
+    # Create directories if they don't exist
+    os.makedirs(input_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(masks_dir, exist_ok=True)
     
-    # You can choose between 'inpaint' (enhanced inpainting with skin tone matching)
-    # or 'advanced' (intelligent texture synthesis and color blending - RECOMMENDED)
-    process_image(input_photo, output_photo, method='advanced')
+    # Supported image extensions
+    image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tiff', '*.tif']
     
-    print(f"\nOutput saved to: {output_photo}")
-    print(f"Intermediate masks saved to: {masks_dir}")
-    print("  - skin_mask.png: Shows detected skin regions (eyes excluded)")
-    print("  - highlight_mask.png: Shows detected reflections (eyes excluded)")
-    print("  - eye_mask.png: Shows detected eye regions (if any eyes found)")
+    # Get all image files from input directory
+    input_files = []
+    for ext in image_extensions:
+        input_files.extend(glob.glob(os.path.join(input_dir, ext)))
+        input_files.extend(glob.glob(os.path.join(input_dir, ext.upper())))
+    
+    if not input_files:
+        print(f"No images found in {input_dir}")
+        print(f"Please place your images in the 'data/input' folder.")
+        print(f"Supported formats: {', '.join([ext.replace('*', '') for ext in image_extensions])}")
+    else:
+        print(f"\nFound {len(input_files)} image(s) to process")
+        print(f"Input directory: {input_dir}")
+        print(f"Output directory: {output_dir}")
+        print(f"Masks directory: {masks_dir}\n")
+        
+        successful = 0
+        failed = 0
+        
+        # Process each image
+        for input_path in input_files:
+            try:
+                # Get base filename without extension
+                base_name = os.path.splitext(os.path.basename(input_path))[0]
+                extension = os.path.splitext(input_path)[1]
+                
+                # Create output filename with _out suffix
+                output_filename = f"{base_name}_out{extension}"
+                output_path = os.path.join(output_dir, output_filename)
+                
+                # Process the image
+                # Choose method: 'inpaint' or 'advanced' (RECOMMENDED)
+                success = process_image(input_path, output_path, masks_dir, method='advanced')
+                
+                if success:
+                    successful += 1
+                else:
+                    failed += 1
+                    
+            except Exception as e:
+                print(f"Error processing {input_path}: {str(e)}")
+                failed += 1
+        
+        # Print summary
+        print(f"\n{'='*60}")
+        print(f"PROCESSING COMPLETE")
+        print(f"{'='*60}")
+        print(f"Successfully processed: {successful}/{len(input_files)}")
+        if failed > 0:
+            print(f"Failed: {failed}/{len(input_files)}")
+        print(f"\nResults saved to: {output_dir}")
+        print(f"Debug masks saved to: {masks_dir}")

@@ -22,7 +22,12 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Keep directory structure but ignore contents
+# Data directories - ignore all contents but keep the folders
+data/input/*
+data/output/*
+data/masks/*
+
+# Keep directory structure with .gitkeep files
 !data/input/.gitkeep
 !data/output/.gitkeep
 !data/masks/.gitkeep
