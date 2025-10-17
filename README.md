@@ -5,7 +5,7 @@ This Python script automatically detects and removes white light reflections fro
 ## Project Structure
 
 ```
-Flash/
+Specular_Reflection_Remover/
 ├── src/                          # Source code
 │   └── remove_skin_reflections.py
 ├── data/                         # Data directory
@@ -38,7 +38,7 @@ Flash/
 ```bash
 git clone https://github.com/yousifmasoud/Specular_Reflection_Remover
 .git
-cd Flash
+cd Specular_Reflection_Remover
 ```
 
 2. Install the required dependencies:
