@@ -69,6 +69,20 @@ python src/remove_skin_reflections.py
 - Output: `data/output/photo_out.jpg`
 - Masks: `data/masks/photo_skin_mask.png`, `photo_highlight_mask.png`, `photo_eye_mask.png`
 
+## Example
+
+Below is an example using the sunlit image included in the repository. The left image is the original (from `data/input`) and the right image is the processed result (from `data/output`).
+
+Before and after:
+
+![Before - sunlit feminine](/data/input/sunlit-feminine-beauty-stockcake.jpg)
+![After - sunlit feminine](/data/output/sunlit-feminine-beauty-stockcake_out.jpg)
+
+
+
+![Before - maxresdefault](/data/input/maxresdefault.jpg)
+![After - maxresdefault](/data/output/maxresdefault_out.jpg)
+
 ### Single Image Processing
 
 To process a single image programmatically:
